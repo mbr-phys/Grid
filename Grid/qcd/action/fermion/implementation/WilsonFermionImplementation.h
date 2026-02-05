@@ -513,8 +513,15 @@ void WilsonFermion<Impl>::ContractConservedCurrent(PropagatorField &q_in_1,
 {
   if(curr_type != Current::Vector)
   {
-    std::cout << GridLogError << "Only the conserved vector current is implemented so far." << std::endl;
-    exit(1);
+      if (curr_type == Current::Axial)
+      {
+          std::cout << GridLogMessage << "Warning: the point-split axial current may be implemented, but is not conserved for this action." << std::endl;
+      }
+      else
+      {
+          std::cout << GridLogError << "Only the conserved vector current is implemented so far." << std::endl;
+          exit(1);
+      }
   }
 
   Gamma g5(Gamma::Algebra::Gamma5);
@@ -536,7 +543,8 @@ void WilsonFermion<Impl>::ContractConservedCurrent(PropagatorField &q_in_1,
   };
   Gamma gmu=Gamma(Gmu[mu]);
 
-  g5Lg5=g5*q_in_1*g5;
+  g5Lg5=g5*q_in_1;
+  if (curr_type == Current::Vector) g5Lg5=g5Lg5*g5;
   tmp_shifted=Cshift(q_in_2,mu,1);
   Impl::multLinkField(R,this->Umu,tmp_shifted,mu);
   gmuR=gmu*R;
@@ -546,7 +554,8 @@ void WilsonFermion<Impl>::ContractConservedCurrent(PropagatorField &q_in_1,
 
   tmp_shifted=Cshift(q_in_1,mu,1);
   Impl::multLinkField(g5Lg5,this->Umu,tmp_shifted,mu);
-  g5Lg5=g5*g5Lg5*g5;
+  g5Lg5=g5*g5Lg5;
+  if (curr_type == Current::Vector) g5Lg5=g5Lg5*g5;
   R=q_in_2;
   gmuR=gmu*R;
 
