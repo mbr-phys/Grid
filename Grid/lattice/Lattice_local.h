@@ -83,5 +83,22 @@ inline auto outerProduct (const Lattice<ll> &lhs,const Lattice<rr> &rhs) -> Latt
   });
   return ret;
 }
+
+template<class ll,class rr>
+inline auto outerProductC (const Lattice<ll> &lhs,const Lattice<rr> &rhs) -> Lattice<decltype(outerProductC(ll(),rr()))>
+{
+  typedef decltype(coalescedRead(ll())) sll;
+  typedef decltype(coalescedRead(rr())) srr;
+  Lattice<decltype(outerProductC(ll(),rr()))> ret(rhs.Grid());
+  autoView( lhs_v , lhs, AcceleratorRead);
+  autoView( rhs_v , rhs, AcceleratorRead);
+  autoView( ret_v , ret, AcceleratorWrite);
+  accelerator_for(ss,rhs_v.size(),1,{
+    // FIXME had issues with scalar version of outer 
+    // Use vector [] operator and don't read coalesce this loop
+    ret_v[ss]=outerProductC(lhs_v[ss],rhs_v[ss]);
+  });
+  return ret;
+}
 NAMESPACE_END(Grid);
 #endif

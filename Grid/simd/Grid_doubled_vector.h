@@ -625,6 +625,10 @@ template <class S, class V>
 accelerator_inline Grid_simd2<S, V> outerProduct(const Grid_simd2<S, V> &l,const Grid_simd2<S, V> &r) {
   return l * conjugate(r);
 }
+template <class S, class V>
+accelerator_inline Grid_simd2<S, V> outerProductC(const Grid_simd2<S, V> &l,const Grid_simd2<S, V> &r) {
+  return conjugate(l) * r;
+}
 
 template <class S, class V>
 accelerator_inline Grid_simd2<S, V> trace(const Grid_simd2<S, V> &arg) {

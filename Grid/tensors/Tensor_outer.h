@@ -67,6 +67,39 @@ auto outerProduct (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<declt
   return ret;
 }
 
+template<class CC,IfComplex<CC> = 0>
+accelerator_inline CC outerProductC(const CC &l, const CC& r)
+{
+  return conj(l)*r;
+}
+template<class RR,IfReal<RR> = 0>
+accelerator_inline RR outerProductC(const RR &l, const RR& r)
+{
+  return l*r;
+}
+
+template<class l,class r,int N> accelerator_inline
+auto outerProductC (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iMatrix<decltype(outerProductC(lhs._internal[0],rhs._internal[0])),N>
+{
+  typedef decltype(outerProductC(lhs._internal[0],rhs._internal[0])) ret_t;
+  iMatrix<ret_t,N> ret;
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal[c1][c2] = outerProductC(lhs._internal[c1],rhs._internal[c2]);
+  }}
+  return ret;
+}
+
+
+template<class l,class r> accelerator_inline
+auto outerProductC (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(outerProductC(lhs._internal,rhs._internal))>
+{
+  typedef decltype(outerProductC(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = outerProductC(lhs._internal,rhs._internal);
+  return ret;
+}
+
 NAMESPACE_END(Grid);
 
 #endif
