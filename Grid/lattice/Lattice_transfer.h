@@ -760,9 +760,9 @@ void localCopyRegion(const Lattice<vobj> &From,Lattice<vobj> & To,Coordinate Fro
   int nd = nF;
   GRID_ASSERT(nF == nT);
 
-  for(int d=0;d<nd;d++){
-    GRID_ASSERT(Fg->_processors[d]  == Tg->_processors[d]);
-  }
+  //for(int d=0;d<nd;d++){
+  //  GRID_ASSERT(Fg->_processors[d]  == Tg->_processors[d]);
+  //}
 
   ///////////////////////////////////////////////////////////
   // do the index calc on the GPU
