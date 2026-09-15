@@ -52,6 +52,10 @@ class GeneralLocalStencilView {
     return & this->_entries_p[point+this->_npoints*osite]; 
   }
   void ViewClose(void){};
+#ifdef GRID_LOG_VIEWS
+  size_t size() { return 0; };
+  uint64_t & operator[](size_t i) { static uint64_t v=0; return v; };
+#endif
 };
 ////////////////////////////////////////
 // The Stencil Class itself
@@ -72,12 +76,13 @@ public:
   }
 
   // Resident in managed memory
-  Vector<GeneralStencilEntry>  _entries; 
+  deviceVector<GeneralStencilEntry>  _entries; 
 
   GeneralLocalStencil(GridBase *grid, const std::vector<Coordinate> &shifts)
   {
     int npoints = shifts.size();
     int osites  = grid->oSites();
+    std::vector<GeneralStencilEntry> host_entries(npoints * osites);
     
     this->_grid    = grid;
     this->_npoints = npoints;
@@ -114,7 +119,7 @@ public:
 	    int ld = grid->_ldimensions[d];
 	    int ly = grid->_simd_layout[d];
 
-	    assert((ly==1)||(ly==2)||(ly==grid->Nsimd()));
+	    GRID_ASSERT((ly==1)||(ly==2)||(ly==grid->Nsimd()));
 
 	    int shift = (shifts[ii][d]+fd)%fd;  // make it strictly positive 0.. L-1
 	    int x = Coor[d];                // x in [0... rd-1] as an oSite 
@@ -141,9 +146,10 @@ public:
 	  ////////////////////////////////////////////////
 	  // Store in look up table
 	  ////////////////////////////////////////////////
-	  this->_entries[lex] = SE;
+    host_entries[lex] = SE;
 	}
       });
+    acceleratorCopyToDevice(host_entries.data(), &_entries[0], host_entries.size() * sizeof(GeneralStencilEntry));
   }
   
 };
