@@ -29,6 +29,8 @@ Author: paboyle <paboyle@ph.ed.ac.uk>
 #ifndef QCD_PLAQ_PLUS_RECTANGLE_ACTION_H
 #define QCD_PLAQ_PLUS_RECTANGLE_ACTION_H
 
+#include <Grid/qcd/action/gauge/OpenGaugeBoundary.h>
+
 NAMESPACE_BEGIN(Grid);  
     
 ////////////////////////////////////////////////////////////////////////
@@ -49,8 +51,14 @@ private:
   RealD c_plaq;
   RealD c_rect;
   typename WilsonLoops<Gimpl>::StapleAndRectStapleAllWorkspace workspace;
+  typedef OpenGaugeBoundary<Gimpl> Boundary;
+  Boundary boundary;
 public:
-  PlaqPlusRectangleAction(RealD b,RealD c): c_plaq(b),c_rect(c){};
+  PlaqPlusRectangleAction(
+      RealD b, RealD c,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : c_plaq(b), c_rect(c), boundary(boundary_parameters) {};
 
   virtual std::string action_name(){return "PlaqPlusRectangleAction";}
       
@@ -60,11 +68,16 @@ public:
     std::stringstream sstream;
     sstream << GridLogMessage << "["<<action_name() <<"] c_plaq: " << c_plaq << std::endl;
     sstream << GridLogMessage << "["<<action_name() <<"] c_rect: " << c_rect << std::endl;
+    sstream << boundary.LogParameters();
     return sstream.str();
   }
 
 
   virtual RealD S(const GaugeField &U) {
+    if (boundary.isOpen()) {
+      return boundary.action(
+          U, Boundary::plaquetteRectangleLoops(c_plaq, c_rect));
+    }
     RealD vol = U.Grid()->gSites();
 
     RealD plaq = WilsonLoops<Gimpl>::avgPlaquette(U);
@@ -77,6 +90,11 @@ public:
   };
 
   virtual void deriv(const GaugeField &U, GaugeField &dSdU) {
+    if (boundary.isOpen()) {
+      boundary.derivative(
+          U, Boundary::plaquetteRectangleLoops(c_plaq, c_rect), dSdU);
+      return;
+    }
     //extend Ta to include Lorentz indexes
     RealD factor_p = c_plaq/RealD(Nc)*0.5;
     RealD factor_r = c_rect/RealD(Nc)*0.5;
@@ -113,7 +131,13 @@ template<class Gimpl>
 class RBCGaugeAction : public PlaqPlusRectangleAction<Gimpl> {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
-  RBCGaugeAction(RealD beta,RealD c1) : PlaqPlusRectangleAction<Gimpl>(beta*(1.0-8.0*c1), beta*c1) {};
+  RBCGaugeAction(
+      RealD beta, RealD c1,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : PlaqPlusRectangleAction<Gimpl>(beta * (1.0 - 8.0 * c1),
+                                       beta * c1,
+                                       boundary_parameters) {};
   virtual std::string action_name(){return "RBCGaugeAction";}
 };
 
@@ -121,7 +145,11 @@ template<class Gimpl>
 class IwasakiGaugeAction : public RBCGaugeAction<Gimpl> {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
-  IwasakiGaugeAction(RealD beta) : RBCGaugeAction<Gimpl>(beta,-0.331) {};
+  IwasakiGaugeAction(
+      RealD beta,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : RBCGaugeAction<Gimpl>(beta, -0.331, boundary_parameters) {};
   virtual std::string action_name(){return "IwasakiGaugeAction";}
 };
 
@@ -129,7 +157,11 @@ template<class Gimpl>
 class SymanzikGaugeAction : public RBCGaugeAction<Gimpl> {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
-  SymanzikGaugeAction(RealD beta) : RBCGaugeAction<Gimpl>(beta,-1.0/12.0) {};
+  SymanzikGaugeAction(
+      RealD beta,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : RBCGaugeAction<Gimpl>(beta, -1.0 / 12.0, boundary_parameters) {};
   virtual std::string action_name(){return "SymanzikGaugeAction";}
 };
 
@@ -137,7 +169,11 @@ template<class Gimpl>
 class DBW2GaugeAction : public RBCGaugeAction<Gimpl> {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
-  DBW2GaugeAction(RealD beta) : RBCGaugeAction<Gimpl>(beta,-1.4067) {};
+  DBW2GaugeAction(
+      RealD beta,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : RBCGaugeAction<Gimpl>(beta, -1.4067, boundary_parameters) {};
   virtual std::string action_name(){return "DBW2GaugeAction";}
 };
 

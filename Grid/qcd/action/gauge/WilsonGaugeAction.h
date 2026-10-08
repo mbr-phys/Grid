@@ -33,6 +33,8 @@ directory
 #ifndef QCD_WILSON_GAUGE_ACTION_H
 #define QCD_WILSON_GAUGE_ACTION_H
 
+#include <Grid/qcd/action/gauge/OpenGaugeBoundary.h>
+
 NAMESPACE_BEGIN(Grid);
 
 ////////////////////////////////////////////////////////////////////////
@@ -49,19 +51,27 @@ public:
   using Action<GaugeField>::refresh;
   
   /////////////////////////// constructors
-  explicit WilsonGaugeAction(RealD beta_):beta(beta_){};
+  explicit WilsonGaugeAction(
+      RealD beta_,
+      const OpenGaugeBoundaryParameters &boundary_parameters =
+          OpenGaugeBoundaryParameters())
+      : beta(beta_), boundary(boundary_parameters) {};
 
   virtual std::string action_name() {return "WilsonGaugeAction";}
 
   virtual std::string LogParameters(){
     std::stringstream sstream;
     sstream << GridLogMessage << "[WilsonGaugeAction] Beta: " << beta << std::endl;
+    sstream << boundary.LogParameters();
     return sstream.str();
   }
 
   virtual void refresh(const GaugeField &U, GridSerialRNG &sRNG, GridParallelRNG &pRNG){};  // noop as no pseudoferms
 
   virtual RealD S(const GaugeField &U) {
+    if (boundary.isOpen()) {
+      return boundary.action(U, Boundary::plaquetteLoops(beta));
+    }
     RealD plaq = WilsonLoops<Gimpl>::avgPlaquette(U);
     RealD vol = U.Grid()->gSites();
     RealD action = beta * (1.0 - plaq) * (Nd * (Nd - 1.0)) * vol * 0.5;
@@ -69,6 +79,10 @@ public:
   };
 
   virtual void deriv(const GaugeField &U, GaugeField &dSdU) {
+    if (boundary.isOpen()) {
+      boundary.derivative(U, Boundary::plaquetteLoops(beta), dSdU);
+      return;
+    }
     // not optimal implementation FIXME
     // extend Ta to include Lorentz indexes
 
@@ -91,7 +105,9 @@ public:
   }
 
 private:
-  RealD beta;  
+  typedef OpenGaugeBoundary<Gimpl> Boundary;
+  RealD beta;
+  Boundary boundary;
  };
 
 NAMESPACE_END(Grid);
