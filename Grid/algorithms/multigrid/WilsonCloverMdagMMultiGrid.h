@@ -83,7 +83,7 @@ public:
 };
 // clang-format on
 
-void validateParameters(Params const &params) {
+inline void validateParameters(const Params &params) {
 
   auto correctSize = params.nLevels - 1;
 
