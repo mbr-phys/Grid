@@ -80,6 +80,7 @@ NAMESPACE_CHECK(BiCGSTAB);
 #include <Grid/algorithms/iterative/AdefMrhs.h>
 NAMESPACE_CHECK(PowerMethod);
 #include <Grid/algorithms/multigrid/MultiGrid.h>
+#include <Grid/algorithms/multigrid/WilsonCloverMdagMMultiGrid.h>
 NAMESPACE_CHECK(multigrid);
 #include <Grid/algorithms/FFT.h>
 
