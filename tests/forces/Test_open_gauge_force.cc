@@ -22,14 +22,19 @@ RealD forceCheck(Action &action, LatticeGaugeField &U, GridParallelRNG &pRNG,
   }
 
   Uprime = U;
-  autoView(Uprime_v, Uprime, CpuWrite);
-  autoView(U_v, U, CpuRead);
-  autoView(momentum_v, momentum, CpuRead);
-  thread_foreach(ss, U_v, {
-    for (int mu = 0; mu < Nd; ++mu)
-      Uprime_v[ss](mu) = U_v[ss](mu) +
-                         momentum_v[ss](mu) * U_v[ss](mu) * dt;
-  });
+  {
+    // Close all CPU views before action.S() opens accelerator views of the
+    // same fields. Leaving these views alive triggers the MemoryManagerCache
+    // cpuLock assertion on accelerator-enabled builds.
+    autoView(Uprime_v, Uprime, CpuWrite);
+    autoView(U_v, U, CpuRead);
+    autoView(momentum_v, momentum, CpuRead);
+    thread_foreach(ss, U_v, {
+      for (int mu = 0; mu < Nd; ++mu)
+        Uprime_v[ss](mu) = U_v[ss](mu) +
+                           momentum_v[ss](mu) * U_v[ss](mu) * dt;
+    });
+  }
 
   RealD actual = action.S(Uprime) - action.S(U);
   LatticeComplex predicted_density(grid);
