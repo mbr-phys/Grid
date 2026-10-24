@@ -34,6 +34,8 @@ directory
 #ifndef QCD_UTILS_WILSON_LOOPS_H
 #define QCD_UTILS_WILSON_LOOPS_H
 
+#include <Grid/qcd/utils/GaugeLoopPath.h>
+
 NAMESPACE_BEGIN(Grid);
 
 // Common wilson loop observables
@@ -43,6 +45,8 @@ public:
 
   typedef typename Gimpl::GaugeLinkField GaugeMat;
   typedef typename Gimpl::GaugeField GaugeLorentz;
+
+  typedef GaugeLoopPath<Gimpl> LoopPath;
 
   //////////////////////////////////////////////////
   // directed plaquette oriented in mu,nu plane
@@ -123,6 +127,59 @@ public:
     double vol = Umu.Grid()->gSites();
     double faces = (1.0 * Nd * (Nd - 1)) / 2.0;
     return sumplaq / vol / faces / Nc; // Nd , Nc dependent... FIXME
+  }
+
+  //////////////////////////////////////////////////
+  // plaquette average with open temporal boundaries
+  //////////////////////////////////////////////////
+  // Loops leaving [0,T] in the open direction are omitted; purely spatial
+  // plaquettes on x0=0 and x0=T carry weights.boundary.  For periodic
+  // parameters this is avgPlaquette(Umu) for any weights.  With 4D open
+  // boundaries the weight sum is 3*V3*(2*Lt - 3 + 2*weights.boundary).
+  static GaugeLoopAverage plaquetteAverage(const GaugeLorentz &Umu,
+                                           const OpenGaugeBoundaryParameters &boundary,
+                                           const GaugeLoopWeights &weights) {
+    if (!boundary.open) {
+      double vol = Umu.Grid()->gSites();
+      double faces = (1.0 * Nd * (Nd - 1)) / 2.0;
+      return {avgPlaquette(Umu), RealD(vol * faces)};
+    }
+    return LoopPath::loopAverage(Umu, LoopPath::plaquetteLoops(1.0), boundary, weights);
+  }
+
+  // Boundary weight 1/2, the action weight cG/2 at its tree-level value cG = 1,
+  // independent of the cG in boundary: Nc*value equals openQCD's
+  // avpl = plaq_wsum_dble()/npl, and weightSum equals npl = 6*(Lt-1)*V3.
+  static GaugeLoopAverage treeLevelPlaquetteAverage(const GaugeLorentz &Umu,
+                                                    const OpenGaugeBoundaryParameters &boundary) {
+    return plaquetteAverage(Umu, boundary, GaugeLoopWeights::treeLevel());
+  }
+
+  // Boundary weight cG/2, as in the open gauge action.  For the Wilson action
+  // S = beta * weightSum * (1 - value).  Equal to treeLevelPlaquetteAverage at
+  // cG = 1.
+  static GaugeLoopAverage actionCompatiblePlaquetteAverage(const GaugeLorentz &Umu,
+                                                           const OpenGaugeBoundaryParameters &boundary) {
+    return plaquetteAverage(Umu, boundary, GaugeLoopWeights::action(boundary));
+  }
+
+  // Boundary weight 1: every plaquette that fits in [0,T] counts once.
+  static GaugeLoopAverage geometricPlaquetteAverage(const GaugeLorentz &Umu,
+                                                    const OpenGaugeBoundaryParameters &boundary) {
+    return plaquetteAverage(Umu, boundary, GaugeLoopWeights::geometric());
+  }
+
+  // Plaquette average per time slice of boundary.timeDir.  With the default
+  // Split assignment and GaugeLoopWeights::treeLevel(), the plaquette
+  // action density 2*Nc*weightSum[x0]*(1 - value[x0]) is openQCD's
+  // plaq_action_slices() asl[x0] (for the same field; cG-independent
+  // tree-level weights); with action(boundary) weights it is the slice
+  // resolution of the open Wilson action density.
+  static GaugeLoopSliceAverage plaquetteSliceAverage(const GaugeLorentz &Umu,
+                                                     const OpenGaugeBoundaryParameters &boundary,
+                                                     const GaugeLoopWeights &weights,
+                                                     const GaugeLoopSliceAssignment assignment = GaugeLoopSliceAssignment::Split) {
+    return LoopPath::loopSliceAverage(Umu, LoopPath::plaquetteLoops(1.0), boundary, weights, assignment);
   }
 
   //////////////////////////////////////////////////
@@ -213,6 +270,18 @@ public:
   /////////////////////////////////////////////////
   static ComplexD avgPolyakovLoop(const GaugeField &Umu) { 
     return avgPolyakovLoop(Umu, 3);
+  }
+
+  /////////////////////////////////////////////////
+  // Polyakov loop with open temporal boundaries: a loop winding through the
+  // open direction is not a closed loop, so it is reported as unavailable
+  // (returns false, result untouched).  Other directions are unchanged.
+  /////////////////////////////////////////////////
+  static bool tryAvgPolyakovLoop(ComplexD &result, const GaugeField &Umu, const int mu,
+                                 const OpenGaugeBoundaryParameters &boundary) {
+    if (boundary.open && (mu == boundary.timeDir)) return false;
+    result = avgPolyakovLoop(Umu, mu);
+    return true;
   }
 
   //////////////////////////////////////////////////
@@ -638,8 +707,64 @@ public:
       FS = 0.125*(FS - adj(FS));
   }
 
-  static Real TopologicalCharge(const GaugeLorentz &U){
-    // 4d topological charge
+  // Field strength with open temporal boundaries: zero on sites where some
+  // 1x1 clover leaf of some plane would leave [0,T], i.e. outside 0 < x0 < T
+  // (openQCD's ftensor() convention).  Unchanged for periodic boundaries.
+  static void FieldStrength(GaugeMat &FS, const GaugeLorentz &Umu, int mu, int nu,
+                            const OpenGaugeBoundaryParameters &boundary){
+    FieldStrength(FS, Umu, mu, nu);
+    if (boundary.open) FS = LoopPath::interiorMask(Umu.Grid(), boundary, 1) * FS;
+  }
+
+  // Clover action density s(x) = -sum_{mu<nu} tr(F F), with F the traceless
+  // part of FieldStrength.  This is openQCD's ym_action() density
+  // (1/4) sum_{mu,nu} F^a_{mu nu}(x)^2; it is zero outside 0 < x0 < T for open
+  // boundaries.  Note WilsonFlow::energyDensityCloverleaf does not remove the
+  // trace.
+  static void CloverEnergyDensity(ComplexField &E, const GaugeLorentz &U,
+                                  const OpenGaugeBoundaryParameters &boundary){
+    GaugeMat F(U.Grid()), unit(U.Grid());
+    unit = 1.0 / RealD(Nc);
+    E = Zero();
+    for (int mu = 0; mu < Nd - 1; mu++) {
+      for (int nu = mu + 1; nu < Nd; nu++) {
+        FieldStrength(F, U, mu, nu, boundary);
+        F = F - trace(F) * unit;
+        E = E - trace(F * F);
+      }
+    }
+  }
+
+  // Average of the clover action density over the interior sites; weightSum
+  // is the number of interior sites (the full volume if periodic).
+  static GaugeLoopAverage cloverEnergyDensityAverage(const GaugeLorentz &U,
+                                                     const OpenGaugeBoundaryParameters &boundary){
+    ComplexField E(U.Grid());
+    CloverEnergyDensity(E, U, boundary);
+    ComplexField mask = LoopPath::interiorMask(U.Grid(), boundary, 1);
+    const RealD sites = real(TensorRemove(sum(mask)));
+    GRID_ASSERT(sites > 0.0);
+    return {real(TensorRemove(sum(E))) / sites, sites};
+  }
+
+  // The same per time slice: value[x0] is the mean density on interior slices
+  // and 0 (with weightSum 0) on x0 = 0 and x0 = T for open boundaries.
+  static GaugeLoopSliceAverage cloverEnergyDensitySliceAverage(const GaugeLorentz &U,
+                                                               const OpenGaugeBoundaryParameters &boundary){
+    ComplexField E(U.Grid());
+    CloverEnergyDensity(E, U, boundary);
+    ComplexField mask = LoopPath::interiorMask(U.Grid(), boundary, 1);
+    GaugeLoopSliceAverage result;
+    std::vector<RealD> numerator = LoopPath::sliceSums(E, boundary);
+    result.weightSum = LoopPath::sliceSums(mask, boundary);
+    result.value.resize(numerator.size());
+    for (int x0 = 0; x0 < numerator.size(); x0++)
+      result.value[x0] = (result.weightSum[x0] > 0.0) ? numerator[x0] / result.weightSum[x0] : 0.0;
+    return result;
+  }
+
+  // 4d topological charge density (1x1 clover)
+  static void TopologicalChargeDensity(ComplexField &qfield, const GaugeLorentz &U){
     GRID_ASSERT(Nd==4);
     // Bx = -iF(y,z), By = -iF(z,y), Bz = -iF(x,y)
     GaugeMat Bx(U.Grid()), By(U.Grid()), Bz(U.Grid());
@@ -655,9 +780,33 @@ public:
 
     double coeff = 8.0/(32.0*M_PI*M_PI);
 
-    ComplexField qfield = coeff*trace(Bx*Ex + By*Ey + Bz*Ez);
+    qfield = coeff*trace(Bx*Ex + By*Ey + Bz*Ez);
+  }
+
+  static Real TopologicalCharge(const GaugeLorentz &U){
+    // 4d topological charge
+    ComplexField qfield(U.Grid());
+    TopologicalChargeDensity(qfield, U);
     auto Tq = sum(qfield);
     return TensorRemove(Tq).real();
+  }
+
+  // Topological charge with open temporal boundaries: the 1x1 density is
+  // zero outside 0 < x0 < T, and Q is the sum of the time-slice charges.
+  static std::vector<Real> TimesliceTopologicalCharge(const GaugeLorentz &U,
+                                                      const OpenGaugeBoundaryParameters &boundary){
+    ComplexField qfield(U.Grid());
+    TopologicalChargeDensity(qfield, U);
+    qfield = LoopPath::interiorMask(U.Grid(), boundary, 1) * qfield;
+    std::vector<RealD> q = LoopPath::sliceSums(qfield, boundary);
+    return std::vector<Real>(q.begin(), q.end());
+  }
+
+  static Real TopologicalCharge(const GaugeLorentz &U, const OpenGaugeBoundaryParameters &boundary){
+    std::vector<Real> Tq = TimesliceTopologicalCharge(U, boundary);
+    Real out(0);
+    for(int t=0;t<Tq.size();t++) out += Tq[t];
+    return out;
   }
 
 
@@ -754,10 +903,52 @@ public:
     }
   }
 
+  // Field strength from MxN loops with open temporal boundaries: zero on
+  // sites where some clover leaf, reaching max(M,N) links in time, would leave
+  // [0,T].  Unchanged for periodic boundaries.
+  static void FieldStrengthMxN(GaugeMat &FS, const GaugeLorentz &U, int mu, int nu, int M, int N,
+                               const OpenGaugeBoundaryParameters &boundary){
+    FieldStrengthMxN(FS, U, mu, nu, M, N);
+    if (boundary.open) FS = LoopPath::interiorMask(U.Grid(), boundary, std::max(M, N)) * FS;
+  }
+
   //Topological charge contribution from MxN Wilson loops
   //cf  https://arxiv.org/pdf/hep-lat/9701012.pdf  Eq 6
   //output is the charge by timeslice: sum over timeslices to obtain the total
   static std::vector<Real> TimesliceTopologicalChargeMxN(const GaugeLorentz &U, int M, int N){
+    ComplexField fsum(U.Grid());
+    TopologicalChargeDensityMxN(fsum, U, M, N);
+
+    typedef typename ComplexField::scalar_object sobj;
+    std::vector<sobj> Tq;
+    sliceSum(fsum, Tq, Nd-1);
+
+    std::vector<Real> out(Tq.size());
+    for(int t=0;t<Tq.size();t++) out[t] = TensorRemove(Tq[t]).real();
+    return out;
+  }
+
+  // As above with open temporal boundaries: the MxN density is zero unless
+  // every clover leaf fits, i.e. outside max(M,N) <= x0 <= T - max(M,N).
+  static std::vector<Real> TimesliceTopologicalChargeMxN(const GaugeLorentz &U, int M, int N,
+                                                         const OpenGaugeBoundaryParameters &boundary){
+    ComplexField fsum(U.Grid());
+    TopologicalChargeDensityMxN(fsum, U, M, N);
+    fsum = LoopPath::interiorMask(U.Grid(), boundary, std::max(M, N)) * fsum;
+    std::vector<RealD> q = LoopPath::sliceSums(fsum, boundary);
+    return std::vector<Real>(q.begin(), q.end());
+  }
+
+  static Real TopologicalChargeMxN(const GaugeLorentz &U, int M, int N,
+                                   const OpenGaugeBoundaryParameters &boundary){
+    std::vector<Real> Tq = TimesliceTopologicalChargeMxN(U, M, N, boundary);
+    Real out(0);
+    for(int t=0;t<Tq.size();t++) out += Tq[t];
+    return out;
+  }
+
+  //Topological charge density from MxN Wilson loops
+  static void TopologicalChargeDensityMxN(ComplexField &fsum, const GaugeLorentz &U, int M, int N){
     GRID_ASSERT(Nd == 4);
     std::vector<std::vector<GaugeMat*> > F(Nd,std::vector<GaugeMat*>(Nd,nullptr));
     //Note F_numu = - F_munu
@@ -774,7 +965,6 @@ public:
     static const int combs[3][4] = { {0,1,2,3}, {0,2,1,3}, {0,3,1,2} };
     static const int signs[3] = { 1, -1, 1 }; //epsilon_{mu nu rho sigma}
 
-    ComplexField fsum(U.Grid());
     fsum = Zero();
     for(int c=0;c<3;c++){
       int mu = combs[c][0], nu = combs[c][1], rho = combs[c][2], sigma = combs[c][3];
@@ -785,14 +975,6 @@ public:
     for(int mu=0;mu<Nd-1;mu++)
       for(int nu=mu+1; nu<Nd; nu++)
 	delete F[mu][nu];
-    
-    typedef typename ComplexField::scalar_object sobj;
-    std::vector<sobj> Tq;
-    sliceSum(fsum, Tq, Nd-1);
-
-    std::vector<Real> out(Tq.size());
-    for(int t=0;t<Tq.size();t++) out[t] = TensorRemove(Tq[t]).real();
-    return out;
   }
   static Real TopologicalChargeMxN(const GaugeLorentz &U, int M, int N){
     std::vector<Real> Tq = TimesliceTopologicalChargeMxN(U,M,N);
@@ -852,6 +1034,37 @@ public:
     Real Q = 0.;
     for(int t=0;t<Qt.size();t++) Q += Qt[t];
     std::cout << GridLogMessage << "5Li Topological charge: " << Q << std::endl;
+    return Q;
+  }
+
+  // 5Li charge with open temporal boundaries.  The improvement combination
+  // needs all five loop shapes, so the combined density is kept only where
+  // the largest (3x3) clover fits: 3 <= x0 <= T-3.
+  static std::vector<Real> TimesliceTopologicalCharge5Li(const GaugeLorentz &U,
+                                                         const OpenGaugeBoundaryParameters &boundary){
+    static const int exts[5][2] = { {1,1}, {2,2}, {1,2}, {1,3}, {3,3} };
+    double c5=1./20.;
+    double c4=1./5.-2.*c5;
+    double c3=(-64.+640.*c5)/45.;
+    double c2=(1-64.*c5)/9.;
+    double c1=(19.-55.*c5)/9.;
+    const double coeffs[5] = { c1, c2, c3, c4, c5 };
+
+    ComplexField q(U.Grid()), qi(U.Grid());
+    q = Zero();
+    for(int i=0;i<5;i++){
+      TopologicalChargeDensityMxN(qi, U, exts[i][0], exts[i][1]);
+      q = q + coeffs[i] * qi;
+    }
+    q = LoopPath::interiorMask(U.Grid(), boundary, 3) * q;
+    std::vector<RealD> Qt = LoopPath::sliceSums(q, boundary);
+    return std::vector<Real>(Qt.begin(), Qt.end());
+  }
+
+  static Real TopologicalCharge5Li(const GaugeLorentz &U, const OpenGaugeBoundaryParameters &boundary){
+    std::vector<Real> Qt = TimesliceTopologicalCharge5Li(U, boundary);
+    Real Q = 0.;
+    for(int t=0;t<Qt.size();t++) Q += Qt[t];
     return Q;
   }
 
@@ -922,6 +1135,46 @@ public:
     double faces = (1.0 * Nd * (Nd - 1)); // 2 distinct orientations summed
 
     return sumrect / vol / faces / Nc; // Nd , Nc dependent... FIXME
+  }
+
+  //////////////////////////////////////////////////
+  // 2x1 rectangle average with open temporal boundaries (both orientations)
+  //////////////////////////////////////////////////
+  // As plaquetteAverage: rectangles leaving [0,T] are omitted and purely
+  // spatial rectangles on x0=0 and x0=T carry weights.boundary.  For periodic
+  // parameters this is avgRectangle(Umu).  openQCD defines no rectangle
+  // diagnostic, so only the action and geometric conventions are provided.
+  static GaugeLoopAverage rectangleAverage(const GaugeLorentz &Umu,
+                                           const OpenGaugeBoundaryParameters &boundary,
+                                           const GaugeLoopWeights &weights) {
+    if (!boundary.open) {
+      double vol = Umu.Grid()->gSites();
+      double faces = (1.0 * Nd * (Nd - 1));
+      return {avgRectangle(Umu), RealD(vol * faces)};
+    }
+    return LoopPath::loopAverage(Umu, LoopPath::rectangleLoops(1.0), boundary, weights);
+  }
+
+  // Boundary weight cG/2 on spatial rectangles, as in the open
+  // plaquette-plus-rectangle actions (and openQCD's action0).
+  static GaugeLoopAverage actionCompatibleRectangleAverage(const GaugeLorentz &Umu,
+                                                           const OpenGaugeBoundaryParameters &boundary) {
+    return rectangleAverage(Umu, boundary, GaugeLoopWeights::action(boundary));
+  }
+
+  static GaugeLoopAverage geometricRectangleAverage(const GaugeLorentz &Umu,
+                                                    const OpenGaugeBoundaryParameters &boundary) {
+    return rectangleAverage(Umu, boundary, GaugeLoopWeights::geometric());
+  }
+
+  // Rectangle average per time slice (see plaquetteSliceAverage).  With Split
+  // a rectangle extending two links in time counts 1/3 on each of the three
+  // slices it spans.
+  static GaugeLoopSliceAverage rectangleSliceAverage(const GaugeLorentz &Umu,
+                                                     const OpenGaugeBoundaryParameters &boundary,
+                                                     const GaugeLoopWeights &weights,
+                                                     const GaugeLoopSliceAssignment assignment = GaugeLoopSliceAssignment::Split) {
+    return LoopPath::loopSliceAverage(Umu, LoopPath::rectangleLoops(1.0), boundary, weights, assignment);
   }
 
   //////////////////////////////////////////////////
