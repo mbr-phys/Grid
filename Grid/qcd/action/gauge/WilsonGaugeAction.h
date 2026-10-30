@@ -51,11 +51,9 @@ public:
   using Action<GaugeField>::refresh;
   
   /////////////////////////// constructors
-  explicit WilsonGaugeAction(
-      RealD beta_,
-      const OpenGaugeBoundaryParameters &boundary_parameters =
-          OpenGaugeBoundaryParameters())
-      : beta(beta_), boundary(boundary_parameters) {};
+  explicit WilsonGaugeAction(RealD beta_,
+                             const OpenGaugeBoundaryParameters &boundary_parameters = OpenGaugeBoundaryParameters())
+    : beta(beta_), boundary(boundary_parameters) {};
 
   virtual std::string action_name() {return "WilsonGaugeAction";}
 
@@ -70,7 +68,7 @@ public:
 
   virtual RealD S(const GaugeField &U) {
     if (boundary.isOpen()) {
-      return boundary.action(U, Boundary::plaquetteLoops(beta));
+      return boundary.action(U, GaugeLoopPath<Gimpl>::plaquetteLoops(beta));
     }
     RealD plaq = WilsonLoops<Gimpl>::avgPlaquette(U);
     RealD vol = U.Grid()->gSites();
@@ -80,7 +78,7 @@ public:
 
   virtual void deriv(const GaugeField &U, GaugeField &dSdU) {
     if (boundary.isOpen()) {
-      boundary.derivative(U, Boundary::plaquetteLoops(beta), dSdU);
+      boundary.derivative(U, GaugeLoopPath<Gimpl>::plaquetteLoops(beta), dSdU);
       return;
     }
     // not optimal implementation FIXME

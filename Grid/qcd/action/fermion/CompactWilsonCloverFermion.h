@@ -174,6 +174,13 @@ public:
 
   void MeeDeriv(GaugeField& mat, const FermionField& U, const FermionField& V, int dag) override;
 
+  // Apply the same endpoint projection used internally by the fixed-boundary
+  // operator.  This is intentionally a no-op for periodic/phase-boundary
+  // instances so callers can use one projection hook for both cases.
+  void ApplyBoundaryProjection(FermionField& f) {
+    if (fixedBoundaries) ApplyBoundaryMask(f);
+  }
+
   /////////////////////////////////////////////
   // Member functions (internals)
   /////////////////////////////////////////////
