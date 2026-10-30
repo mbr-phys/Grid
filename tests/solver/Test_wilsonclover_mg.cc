@@ -27,6 +27,7 @@
 /*  END LEGAL */
 
 #include <Grid/Grid.h>
+#include <Grid/algorithms/multigrid/WilsonCloverMdagMMultiGrid.h>
 #include <Test_multigrid_common.h>
 
 using namespace std;
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
   WilsonCloverFermionD Dwc(Umu, *FGrid, *FrbGrid, mass, csw_r, csw_t);
 
   MdagMLinearOperator<WilsonCloverFermionD, LatticeFermion> MdagMOpDwc(Dwc);
+  Grid::WilsonCloverMdagMMG::HermOpAdaptor<LatticeFermion> MdagMOpDwcAsHermOp(MdagMOpDwc);
 
   std::cout << GridLogMessage << "**************************************************" << std::endl;
   std::cout << GridLogMessage << "Testing Multigrid for Wilson Clover" << std::endl;
@@ -107,7 +109,7 @@ int main(int argc, char **argv) {
   for(auto const &solver : solversDwc) {
     std::cout << std::endl << "Starting with a new solver" << std::endl;
     result = zero;
-    (*solver)(MdagMOpDwc, src, result);
+    (*solver)(MdagMOpDwcAsHermOp, src, result);
     std::cout << std::endl;
   }
 

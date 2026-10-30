@@ -27,6 +27,7 @@
 /*  END LEGAL */
 
 #include <Grid/Grid.h>
+#include <Grid/algorithms/multigrid/WilsonCloverMdagMMultiGrid.h>
 #include <Test_multigrid_common.h>
 
 using namespace std;
@@ -80,6 +81,7 @@ int main(int argc, char **argv) {
   WilsonFermionD Dw(Umu, *FGrid, *FrbGrid, mass);
 
   MdagMLinearOperator<WilsonFermionD, LatticeFermion> MdagMOpDw(Dw);
+  Grid::WilsonCloverMdagMMG::HermOpAdaptor<LatticeFermion> MdagMOpDwAsHermOp(MdagMOpDw);
 
   std::cout << GridLogMessage << "**************************************************" << std::endl;
   std::cout << GridLogMessage << "Testing Multigrid for Wilson" << std::endl;
@@ -104,7 +106,7 @@ int main(int argc, char **argv) {
   for(auto const &solver : solversDw) {
     std::cout << std::endl << "Starting with a new solver" << std::endl;
     result = zero;
-    (*solver)(MdagMOpDw, src, result);
+    (*solver)(MdagMOpDwAsHermOp, src, result);
   }
 
   MGPreconDw->reportTimings();

@@ -27,6 +27,7 @@
 /*  END LEGAL */
 
 #include <Grid/Grid.h>
+#include <Grid/algorithms/multigrid/WilsonCloverMdagMMultiGrid.h>
 #include <Test_multigrid_common.h>
 
 using namespace std;
@@ -89,6 +90,7 @@ int main(int argc, char **argv) {
   WilsonFermionF Dw_f(Umu_f, *FGrid_f, *FrbGrid_f, mass);
 
   MdagMLinearOperator<WilsonFermionD, LatticeFermionD> MdagMOpDw_d(Dw_d);
+  Grid::WilsonCloverMdagMMG::HermOpAdaptor<LatticeFermionD> MdagMOpDw_dAsHermOp(MdagMOpDw_d);
   MdagMLinearOperator<WilsonFermionF, LatticeFermionF> MdagMOpDw_f(Dw_f);
 
   std::cout << GridLogMessage << "**************************************************" << std::endl;
@@ -106,7 +108,7 @@ int main(int argc, char **argv) {
   MixedPrecisionFlexibleGeneralisedMinimalResidual<LatticeFermionD, LatticeFermionF> MPFGMRESPREC(1.0e-12, 50000, FGrid_f, *MGPreconDw_f, 100, false);
 
   std::cout << std::endl << "Starting with a new solver" << std::endl;
-  MPFGMRESPREC(MdagMOpDw_d, src_d, resultMGF_d);
+  MPFGMRESPREC(MdagMOpDw_dAsHermOp, src_d, resultMGF_d);
 
   MGPreconDw_f->reportTimings();
 
@@ -127,7 +129,7 @@ int main(int argc, char **argv) {
     FlexibleGeneralisedMinimalResidual<LatticeFermionD> FGMRESPREC(1.0e-12, 50000, *MGPreconDw_d, 100, false);
 
     std::cout << std::endl << "Starting with a new solver" << std::endl;
-    FGMRESPREC(MdagMOpDw_d, src_d, resultMGD_d);
+    FGMRESPREC(MdagMOpDw_dAsHermOp, src_d, resultMGD_d);
 
     MGPreconDw_d->reportTimings();
 

@@ -656,11 +656,10 @@ public:
     CoarseComplexField iZProj(Grid()); 
     CoarseComplexField oZProj(Grid()); 
 
-    CoarseScalar InnerProd(Grid()); 
-
     std::cout << GridLogMessage<< "CoarsenMatrix Orthog "<< std::endl;
-    // Orthogonalise the subblocks over the basis
-    blockOrthogonalise(InnerProd,Subspace.subspace);
+    // Orthogonalise the subblocks over the basis and preserve any
+    // constrained fine-field subspace carried by the aggregation.
+    Subspace.Orthogonalise();
 
     // Compute the matrix elements of linop between this orthonormal
     // set of vectors.
@@ -784,7 +783,17 @@ public:
       std::cout << GridLogMessage << " ForceHermitian, new code "<<std::endl;
     }
 
+    for(int p=0; p<geom.npoint; ++p) {
+      const RealD linkNorm2 = norm2(A[p]);
+      if (!std::isfinite(linkNorm2)) {
+        std::cout << GridLogError << "Non-finite coarse link at stencil point "
+                  << p << std::endl;
+        GRID_ASSERT(0);
+      }
+    }
+
     InvertSelfStencilLink(); std::cout << GridLogMessage << "Coarse self link inverted" << std::endl;
+    GRID_ASSERT(std::isfinite(norm2(AselfInv)));
     FillHalfCbs(); std::cout << GridLogMessage << "Coarse half checkerboards filled" << std::endl;
   }
 
@@ -812,7 +821,22 @@ public:
         for (int j = 0; j < nbasis; ++j)
           selfLinkEigen(i, j) = static_cast<ComplexD>(TensorRemove(selfLink(i, j)));
 
-      selfLinkInvEigen = selfLinkEigen.inverse();
+      if (!selfLinkEigen.allFinite()) {
+        std::cout << GridLogError
+                  << "Non-finite coarse self link before inversion at local site "
+                  << site << std::endl;
+        GRID_ASSERT(0);
+      }
+      Eigen::FullPivLU<Eigen::MatrixXcd> selfLinkLU(selfLinkEigen);
+      if (selfLinkLU.rank() != nbasis) {
+        std::cout << GridLogError
+                  << "Rank-deficient coarse self link at local site " << site
+                  << ": rank " << selfLinkLU.rank() << " of " << nbasis
+                  << std::endl;
+        GRID_ASSERT(0);
+      }
+      selfLinkInvEigen = selfLinkLU.inverse();
+      GRID_ASSERT(selfLinkInvEigen.allFinite());
 
       for(int i = 0; i < nbasis; ++i)
         for(int j = 0; j < nbasis; ++j)

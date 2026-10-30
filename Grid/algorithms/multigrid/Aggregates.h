@@ -30,6 +30,9 @@ Author: paboyle <paboyle@ph.ed.ac.uk>
 /*  END LEGAL */
 #pragma once
 
+#include <functional>
+#include <utility>
+
 #include <Grid/algorithms/iterative/PrecGeneralisedConjugateResidualNonHermitian.h>
 
 NAMESPACE_BEGIN(Grid);
@@ -40,6 +43,87 @@ inline RealD AggregatePowerLaw(RealD x)
   //  return std::pow(x,-3);
   return std::pow(x,-5);
 }
+
+// Project an operator application into a constrained fine-field subspace.
+// The fixed temporal Wilson-clover boundary requires setup CG to remain in
+// the endpoint-projected space, not merely to receive a projected result after
+// a complete solve.  Wrapping HermOp here projects both inputs and outputs of
+// every iteration performed by the generic Krylov solver.
+template<class Field>
+class ProjectedLinearOperator : public LinearOperatorBase<Field> {
+public:
+  using Projector = std::function<void(Field&)>;
+
+  ProjectedLinearOperator(LinearOperatorBase<Field> &wrapped,
+                          Projector projector)
+    : wrapped_(wrapped), projector_(std::move(projector))
+  {}
+
+  void projectInput(const Field &in, Field &projected) const {
+    projected = in;
+    if (projector_) projector_(projected);
+  }
+
+  void projectOutput(Field &out) const {
+    if (projector_) projector_(out);
+  }
+
+  void OpDiag(const Field &in, Field &out) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.OpDiag(projected, out);
+    projectOutput(out);
+  }
+
+  void OpDir(const Field &in, Field &out, int dir, int disp) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.OpDir(projected, out, dir, disp);
+    projectOutput(out);
+  }
+
+  void OpDirAll(const Field &in, std::vector<Field> &out) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.OpDirAll(projected, out);
+    for (auto &field: out) projectOutput(field);
+  }
+
+  void Op(const Field &in, Field &out) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.Op(projected, out);
+    projectOutput(out);
+  }
+
+  void AdjOp(const Field &in, Field &out) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.AdjOp(projected, out);
+    projectOutput(out);
+  }
+
+  void HermOpAndNorm(const Field &in, Field &out,
+                     RealD &n1, RealD &n2) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.HermOp(projected, out);
+    projectOutput(out);
+    n1 = real(innerProduct(projected, out));
+    n2 = norm2(out);
+  }
+
+  void HermOp(const Field &in, Field &out) override {
+    Field projected(in.Grid());
+    projectInput(in, projected);
+    wrapped_.HermOp(projected, out);
+    projectOutput(out);
+  }
+
+private:
+  LinearOperatorBase<Field> &wrapped_;
+  Projector projector_;
+};
 
 template<class Fobj,class CComplex,int nbasis>
 class Aggregation {
@@ -52,32 +136,77 @@ public:
 
   typedef Lattice< CComplex >   CoarseScalar; // used for inner products on fine field
   typedef Lattice<Fobj >        FineField;
+  using Projector = std::function<void(FineField&)>;
 
   GridBase *CoarseGrid;
   GridBase *FineGrid;
   std::vector<Lattice<Fobj> > subspace;
   int checkerboard;
+  Projector projector;
   int Checkerboard(void){return checkerboard;}
-  Aggregation(GridBase *_CoarseGrid,GridBase *_FineGrid,int _checkerboard) : 
+  Aggregation(GridBase *_CoarseGrid,GridBase *_FineGrid,int _checkerboard,
+              Projector _projector = Projector()) :
     CoarseGrid(_CoarseGrid),
     FineGrid(_FineGrid),
     subspace(nbasis,_FineGrid),
-    checkerboard(_checkerboard)
+    checkerboard(_checkerboard),
+    projector(std::move(_projector))
   {
   };
   
+  void Project(FineField &field) const {
+    if (projector) projector(field);
+  }
+
+  void ValidateFinite(const FineField &field, const char *stage) const {
+    const RealD n2 = norm2(field);
+    if (!std::isfinite(n2)) {
+      std::cout << GridLogError << "Non-finite aggregation field at "
+                << stage << std::endl;
+      GRID_ASSERT(0);
+    }
+  }
+
+  void ValidateProjected(const FineField &field, const char *stage,
+                         RealD tolerance = 1.0e-13) const {
+    ValidateFinite(field, stage);
+    if (!projector) return;
+    FineField projected(FineGrid);
+    FineField difference(FineGrid);
+    projected = field;
+    Project(projected);
+    difference = field - projected;
+    const RealD fieldNorm2 = norm2(field);
+    const RealD differenceNorm2 = norm2(difference);
+    const RealD relative = (fieldNorm2 == 0.0)
+      ? std::sqrt(differenceNorm2)
+      : std::sqrt(differenceNorm2 / fieldNorm2);
+    if (!std::isfinite(relative) || relative > tolerance) {
+      std::cout << GridLogError << "Aggregation field left projected space at "
+                << stage << ": relative endpoint norm " << relative
+                << std::endl;
+      GRID_ASSERT(0);
+    }
+  }
+
   void GlobalOrthonormalise(void)
   {
     // Normalise all vectors
     for(int i=0;i<nbasis; i++){
-      RealD scale = std::pow(norm2(subspace[i]),-0.5); 
+      Project(subspace[i]);
+      const RealD n2 = norm2(subspace[i]);
+      GRID_ASSERT(std::isfinite(n2) && n2 > 0.0);
+      RealD scale = std::pow(n2,-0.5);
       subspace[i] = subspace[i]*scale;
     }
     for(int i=0;i<nbasis; i++){
       for(int j=0;j<i; j++){
 	basisOrthogonalize(subspace,subspace[i],j);
       }
-      RealD scale = std::pow(norm2(subspace[i]),-0.5); 
+      Project(subspace[i]);
+      const RealD n2 = norm2(subspace[i]);
+      GRID_ASSERT(std::isfinite(n2) && n2 > 0.0);
+      RealD scale = std::pow(n2,-0.5);
       subspace[i] = subspace[i]*scale;
     }
   }  
@@ -85,13 +214,21 @@ public:
     CoarseScalar InnerProd(CoarseGrid); 
     //    std::cout << GridLogMessage <<" Block Gramm-Schmidt pass 1"<<std::endl;
     blockOrthogonalise(InnerProd,subspace);
+    for (auto &basis: subspace) {
+      Project(basis);
+      ValidateProjected(basis, "block orthonormalization");
+    }
   } 
   void ProjectToSubspace(CoarseVector &CoarseVec,const FineField &FineVec){
-    blockProject(CoarseVec,FineVec,subspace);
+    FineField projected(FineGrid);
+    projected = FineVec;
+    Project(projected);
+    blockProject(CoarseVec,projected,subspace);
   }
   void PromoteFromSubspace(const CoarseVector &CoarseVec,FineField &FineVec){
     FineVec.Checkerboard() = subspace[0].Checkerboard();
     blockPromote(CoarseVec,FineVec,subspace);
+    Project(FineVec);
   }
 
   virtual void CreateSubspaceRandom(GridParallelRNG  &RNG) {
@@ -101,9 +238,13 @@ public:
     for(int b=0;b<nn;b++){
       subspace[b] = Zero();
       gaussian(RNG,noise);
-      scale = std::pow(norm2(noise),-0.5); 
+      Project(noise);
+      const RealD noiseNorm2 = norm2(noise);
+      GRID_ASSERT(std::isfinite(noiseNorm2) && noiseNorm2 > 0.0);
+      scale = std::pow(noiseNorm2,-0.5);
       noise=noise*scale;
       subspace[b] = noise;
+      ValidateProjected(subspace[b], "random subspace generation");
     }
   }
   virtual void CreateSubspace(GridParallelRNG  &RNG,LinearOperatorBase<FineField> &hermop,int nn=nbasis)
@@ -111,7 +252,8 @@ public:
 
     RealD scale;
 
-    ConjugateGradient<FineField> CG(1.0e-4,2000,false);
+    ConjugateGradient<FineField> CG(1.0e-4,2000,true);
+    ProjectedLinearOperator<FineField> projectedHermop(hermop, projector);
     FineField noise(FineGrid);
     FineField Mn(FineGrid);
 
@@ -119,25 +261,32 @@ public:
       
       subspace[b] = Zero();
       gaussian(RNG,noise);
-      scale = std::pow(norm2(noise),-0.5); 
+      Project(noise);
+      RealD noiseNorm2 = norm2(noise);
+      GRID_ASSERT(std::isfinite(noiseNorm2) && noiseNorm2 > 0.0);
+      scale = std::pow(noiseNorm2,-0.5);
       noise=noise*scale;
       
-      hermop.Op(noise,Mn); std::cout<<GridLogMessage << "noise   ["<<b<<"] <n|MdagM|n> "<<norm2(Mn)<<std::endl;
+      projectedHermop.HermOp(noise,Mn); std::cout<<GridLogMessage << "noise   ["<<b<<"] <n|MdagM|n> "<<norm2(Mn)<<std::endl;
 
       for(int i=0;i<2;i++){
 
-	CG(hermop,noise,subspace[b]);
+	CG(projectedHermop,noise,subspace[b]);
+	Project(subspace[b]);
 
 	noise = subspace[b];
-	scale = std::pow(norm2(noise),-0.5); 
+	noiseNorm2 = norm2(noise);
+	GRID_ASSERT(std::isfinite(noiseNorm2) && noiseNorm2 > 0.0);
+	scale = std::pow(noiseNorm2,-0.5);
 	noise=noise*scale;
 	
-	hermop.Op(noise,Mn); std::cout<<GridLogMessage << "intermediate["<<i<<"] <i|MdagM|i> "<<norm2(Mn)<<std::endl;
+	projectedHermop.HermOp(noise,Mn); std::cout<<GridLogMessage << "intermediate["<<i<<"] <i|MdagM|i> "<<norm2(Mn)<<std::endl;
 	
       }
 
-      hermop.Op(noise,Mn); std::cout<<GridLogMessage << "filtered["<<b<<"] <f|MdagM|f> "<<norm2(Mn)<<std::endl;
+      projectedHermop.HermOp(noise,Mn); std::cout<<GridLogMessage << "filtered["<<b<<"] <f|MdagM|f> "<<norm2(Mn)<<std::endl;
       subspace[b]   = noise;
+      ValidateProjected(subspace[b], "near-null setup");
 
     }
   }
