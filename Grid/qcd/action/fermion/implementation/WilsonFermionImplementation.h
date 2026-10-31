@@ -538,8 +538,11 @@ void WilsonFermion<Impl>::ContractConservedCurrent(PropagatorField &q_in_1,
   };
   Gamma gmu=Gamma(Gmu[mu]);
 
-  g5Lg5=g5*q_in_1;
-  if (curr_type == Current::Vector) g5Lg5=g5Lg5*g5;
+  // Vector: q_out = S(y,x)(1-gmu)U S(x+mu,y) - S(y,x+mu)U^dag(1+gmu)S(x,y).
+  // Axial (point split): gmu -> gmu*g5 with the same sign and normalisation,
+  // and no Wilson (r) term, which only enters the chiral-breaking term:
+  // q_out = -S(y,x)gmu g5 U S(x+mu,y) - S(y,x+mu)U^dag gmu g5 S(x,y).
+  g5Lg5=g5*q_in_1*g5;
   tmp_shifted=Cshift(q_in_2,mu,1);
   Impl::multLinkField(R,this->Umu,tmp_shifted,mu);
   if (curr_type == Current::Vector)
@@ -547,28 +550,27 @@ void WilsonFermion<Impl>::ContractConservedCurrent(PropagatorField &q_in_1,
       gmuR=gmu*R;
       q_out=adj(g5Lg5)*R;
       q_out-=adj(g5Lg5)*gmuR;
-  } else  // Current::Axial is only other option that will work
+  }
+  else
   {
       gmuR=gmu*g5*R;
-      //q_out=adj(g5Lg5)*g5*R;
-      q_out=adj(g5Lg5)*gmuR;
+      q_out=-(adj(g5Lg5)*gmuR);
   }
 
   tmp_shifted=Cshift(q_in_1,mu,1);
   Impl::multLinkField(g5Lg5,this->Umu,tmp_shifted,mu);
-  g5Lg5=g5*g5Lg5;
-  if (curr_type == Current::Vector) g5Lg5=g5Lg5*g5;
+  g5Lg5=g5*g5Lg5*g5;
   R=q_in_2;
   if (curr_type == Current::Vector)
   {
       gmuR=gmu*R;
       q_out-=adj(g5Lg5)*R;
       q_out-=adj(g5Lg5)*gmuR;
-  } else  // Current::Axial is only other option that will work
+  }
+  else
   {
       gmuR=gmu*g5*R;
-      //q_out+=adj(g5Lg5)*g5*R;
-      q_out+=adj(g5Lg5)*gmuR;
+      q_out-=adj(g5Lg5)*gmuR;
   }
 }
 
