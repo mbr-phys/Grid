@@ -34,7 +34,8 @@ NAMESPACE_BEGIN(Grid);
 
 // Gauge action and force for open temporal boundary conditions (a la openQCD), built on the loop masks and weights of GaugeLoopPath
 // Spatial loops on the boundary slices carry the action weight cG/2
-// A small correctness-first implementation; the periodic actions keep their optimised paths.
+// The generic loop-path force handles any loop family; the plaquette force also has a fast path on the padded
+// staple stencil of the periodic actions (plaquetteDerivative).
 template <class Gimpl> class OpenGaugeBoundary {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
@@ -44,9 +45,26 @@ private:
   typedef GaugeLoopPath<Gimpl> Path;
   typedef typename Path::Loop Loop;
 
+  // Padded-cell workspace holding the plaquette staple stencil only
+  class StapleWorkspace : public WilsonLoops<Gimpl>::WilsonLoopPaddedWorkspace {
+  public:
+    StapleWorkspace(void) {
+      this->addStencil(new typename WilsonLoops<Gimpl>::StaplePaddedAllWorkspace);
+    }
+  };
+
+  // Field-independent data, built on first use and reused while the grid is unchanged:
+  // weight fields keyed by their time-slice profile (loop weights depend on x0 only), and the staple stencil.
+  // Shared by copies of the boundary, which have the same parameters.
+  struct Cache {
+    GridBase *grid = nullptr;
+    std::map<std::vector<RealD>, std::unique_ptr<ComplexField>> fields;
+    std::unique_ptr<StapleWorkspace> staples;
+  };
+
 public:
   explicit OpenGaugeBoundary(const OpenGaugeBoundaryParameters &parameters = OpenGaugeBoundaryParameters())
-    : parameters_(parameters) {
+    : parameters_(parameters), cache_(std::make_shared<Cache>()) {
     Path::checkParameters(parameters_);
   }
 
@@ -70,29 +88,38 @@ public:
     return Path::loopWeight(grid, path, parameters_, GaugeLoopWeights::action(parameters_));
   }
 
+  // Loops with a zero coefficient (e.g. the rectangles of a plaquette-only action) are skipped
   RealD action(const GaugeField &U, const std::vector<Loop> &loops) const {
     GridBase *grid = U.Grid();
     std::vector<GaugeLinkField> links = Path::extractLinks(U);
     const GaugeLoopWeights w = GaugeLoopWeights::action(parameters_);
-    ComplexField weight(grid), reTrace(grid), density(grid);
+    const int Lt = grid->GlobalDimensions()[parameters_.timeDir];
+    GaugeLinkField transporter(grid);
+    ComplexField reTrace(grid), density(grid);
     RealD result = 0.0;
     for (const auto &loop : loops) {
-      Path::loopWeightAndTrace(weight, reTrace, links, loop.path, parameters_, w);
-      density = weight * (RealD(Gimpl::num_colours) - reTrace);
+      if (loop.coefficient == 0.0) continue;
+      Path::pathProduct(transporter, links, loop.path, Coordinate(Nd, 0));
+      reTrace = real(trace(transporter));
+      density = RealD(Gimpl::num_colours) - reTrace;
+      const ComplexField *weight = profileField(grid, Path::loopWeightProfile(Lt, loop.path, parameters_, w));
+      if (weight) density = (*weight) * density;
       result += loop.coefficient * real(TensorRemove(sum(density))) / RealD(Gimpl::num_colours);
     }
     return result;
   }
 
+  // Loops with a zero coefficient are skipped
   void derivative(const GaugeField &U, const std::vector<Loop> &loops, GaugeField &dSdU) const {
     GridBase *grid = U.Grid();
     std::vector<GaugeLinkField> links = Path::extractLinks(U);
     std::vector<GaugeLinkField> staples(Nd, grid);
+    GaugeLinkField staple(grid);
     for (int mu = 0; mu < Nd; ++mu) staples[mu] = Zero();
 
     for (const auto &loop : loops) {
-      ComplexField baseWeight = loopWeight(grid, loop.path);
-      accumulateLoopStaples(links, loop.path, baseWeight, loop.coefficient, staples);
+      if (loop.coefficient == 0.0) continue;
+      accumulateLoopStaples(links, loop, staples, staple);
     }
 
     for (int mu = 0; mu < Nd; ++mu) {
@@ -101,13 +128,108 @@ public:
     }
   }
 
+  // Force of the plaquette action, equal to derivative(U, plaquetteLoops(c_plaq), dSdU), on the padded staple
+  // stencil of the periodic actions. Every plaquette the open boundary removes contains an unused link
+  // U_t(x0=T), and every plaquette containing one is removed, so zeroing those links removes exactly the
+  // dropped plaquettes from the periodic staples. Only the spatial staples on x0=0 and x0=T then need the
+  // extra weight cG/2 - 1. The staples of an unused link all contain another unused link, so its force is 0.
+  void plaquetteDerivative(const GaugeField &U, RealD c_plaq, GaugeField &dSdU) const {
+    GridBase *grid = U.Grid();
+    GridCartesian *cartesian = dynamic_cast<GridCartesian *>(grid);
+    if (!isOpen() || !cartesian) {
+      derivative(U, Path::plaquetteLoops(c_plaq), dSdU);
+      return;
+    }
+
+    const int t = parameters_.timeDir;
+    const int Lt = grid->GlobalDimensions()[t];
+    GRID_ASSERT(Lt >= 2);
+    std::vector<GaugeLinkField> links = Path::extractLinks(U);
+
+    // links with U_t(x0=T) set to zero
+    std::vector<GaugeLinkField> cut(links);
+    std::vector<RealD> keep(Lt, 1.0);
+    keep[Lt - 1] = 0.0;
+    cut[t] = (*profileField(grid, keep)) * links[t];
+
+    Cache &c = cache(grid);
+    if (!c.staples) c.staples.reset(new StapleWorkspace);
+    const PaddedCell &cell = c.staples->getPaddedCell(cartesian);
+    CshiftImplGauge<Gimpl> cshiftImpl;
+    std::vector<GaugeLinkField> padded(Nd, cell.grids.back());
+    for (int mu = 0; mu < Nd; ++mu) padded[mu] = cell.Exchange(cut[mu], cshiftImpl);
+    std::vector<GaugeLinkField> staples(Nd, grid);
+    WilsonLoops<Gimpl>::StaplePaddedAll(staples, padded, cell, c.staples->getStencil(0, cartesian));
+
+    const RealD boundary = GaugeLoopWeights::action(parameters_).boundary;
+    if (boundary != 1.0) {
+      std::vector<RealD> edge(Lt, 0.0);
+      edge[0] = boundary - 1.0;
+      edge[Lt - 1] = boundary - 1.0;
+      const ComplexField &correction = *profileField(grid, edge);
+      GaugeLinkField spatial(grid);
+
+      for (int mu = 0; mu < Nd; ++mu) {
+        if (mu == t) continue;
+        spatial = Zero();
+        for (int nu = 0; nu < Nd; ++nu) {
+          if ((nu == mu) || (nu == t)) continue;
+          // the two staples of WilsonLoops::Staple in the (mu, nu) plane
+          spatial += Gimpl::ShiftStaple(
+                       Gimpl::CovShiftForward(links[nu], nu,
+                         Gimpl::CovShiftBackward(links[mu], mu, Gimpl::CovShiftIdentityBackward(links[nu], nu))),
+                       mu);
+          spatial += Gimpl::ShiftStaple(
+                       Gimpl::CovShiftBackward(links[nu], nu, Gimpl::CovShiftBackward(links[mu], mu, links[nu])),
+                       mu);
+        }
+        staples[mu] = staples[mu] + correction * spatial;
+      }
+    }
+
+    const RealD factor = 0.5 * c_plaq / RealD(Gimpl::num_colours);
+    for (int mu = 0; mu < Nd; ++mu) {
+      GaugeLinkField force = Ta(links[mu] * staples[mu]) * factor;
+      PokeIndex<LorentzIndex>(dSdU, force, mu);
+    }
+  }
+
 private:
   OpenGaugeBoundaryParameters parameters_;
+  std::shared_ptr<Cache> cache_;
 
-  static void accumulateLoopStaples(const std::vector<GaugeLinkField> &links, const std::vector<int> &path,
-                                    const ComplexField &baseWeight, RealD coefficient,
-                                    std::vector<GaugeLinkField> &staples) {
+  Cache &cache(GridBase *grid) const {
+    if (cache_->grid != grid) {
+      cache_->grid = grid;
+      cache_->fields.clear();
+    }
+    return *cache_;
+  }
+
+  // Cached field of a time-slice profile; nullptr if the profile is 1 everywhere (nothing to multiply)
+  const ComplexField *profileField(GridBase *grid, const std::vector<RealD> &profile) const {
+    bool ones = true;
+    for (auto v : profile) ones = ones && (v == 1.0);
+    if (ones) return nullptr;
+
+    Cache &c = cache(grid);
+    auto it = c.fields.find(profile);
+    if (it == c.fields.end()) {
+      std::unique_ptr<ComplexField> field(new ComplexField(Path::profileField(grid, parameters_.timeDir, profile)));
+      it = c.fields.emplace(profile, std::move(field)).first;
+    }
+    return it->second.get();
+  }
+
+  void accumulateLoopStaples(const std::vector<GaugeLinkField> &links, const Loop &loop,
+                             std::vector<GaugeLinkField> &staples, GaugeLinkField &staple) const {
+    GridBase *grid = links[0].Grid();
+    const std::vector<int> &path = loop.path;
     const int n = path.size();
+    const int t = parameters_.timeDir;
+    const int Lt = grid->GlobalDimensions()[t];
+    const std::vector<RealD> base = Path::loopWeightProfile(Lt, path, parameters_, GaugeLoopWeights::action(parameters_));
+    std::vector<RealD> shifted(Lt);
     Coordinate before(Nd, 0);
 
     for (int i = 0; i < n; ++i) {
@@ -131,14 +253,13 @@ private:
 
       Coordinate initial(Nd, 0);
       initial[mu] = 1;
-      GaugeLinkField staple(baseWeight.Grid());
       Path::pathProduct(staple, links, rest, initial);
 
-      Coordinate weightShift(Nd, 0);
-      for (int d = 0; d < Nd; ++d) weightShift[d] = -target[d];
-
-      ComplexField linkWeight = Path::shiftScalar(baseWeight, weightShift);
-      staples[mu] = staples[mu] + coefficient * linkWeight * staple;
+      // The loop through this link at x starts at x - target: its weight is the base profile at x0 - target[t]
+      for (int x0 = 0; x0 < Lt; ++x0) shifted[x0] = base[((x0 - target[t]) % Lt + Lt) % Lt];
+      const ComplexField *weight = profileField(grid, shifted);
+      if (weight) staples[mu] = staples[mu] + loop.coefficient * (*weight) * staple;
+      else        staples[mu] = staples[mu] + loop.coefficient * staple;
 
       before[mu] += (step > 0) ? 1 : -1;
     }

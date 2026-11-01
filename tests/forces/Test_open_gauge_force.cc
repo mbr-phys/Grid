@@ -133,6 +133,44 @@ int main(int argc, char **argv)
   GRID_ASSERT(std::abs(real(TensorRemove(sum(spatial_weight))) - expected_spatial_weight) < 1.0e-10);
   GRID_ASSERT(std::abs(real(TensorRemove(sum(temporal_weight))) - expected_temporal_weight) < 1.0e-10);
 
+  // The cached force weights are built from per-slice profiles: they must equal loopWeight exactly
+  typedef GaugeLoopPath<PeriodicGimplR> LoopPathR;
+  const std::vector<std::vector<int>> weight_paths = {
+    {1, 2, -1, -2}, {1, Nd, -1, -Nd}, {Nd, Nd, 1, -Nd, -Nd, -1}, {1, Nd, Nd, -1, -Nd, -Nd}};
+  for (const auto &path : weight_paths) {
+    LatticeComplex weight_diff(&grid);
+    weight_diff = weighted_boundary.loopWeight(&grid, path)
+      - LoopPathR::profileField(&grid, Nd - 1,
+                           LoopPathR::loopWeightProfile(latt_size[Nd - 1], path, weight_parameters,
+                                                   GaugeLoopWeights::action(weight_parameters)));
+    GRID_ASSERT(norm2(weight_diff) == 0.0);
+  }
+
+  // The padded-stencil plaquette force must reproduce the generic loop-path force, for any cG
+  for (RealD cG : {1.0, test_cG, 0.0, 2.0}) {
+    OpenGaugeBoundary<PeriodicGimplR> open_paths(OpenGaugeBoundaryParameters::Open(Nd - 1, cG));
+    LatticeGaugeField F_fast(&grid);
+    open_paths.plaquetteDerivative(U, beta, F_fast);
+    open_paths.derivative(U, LoopPathR::plaquetteLoops(beta), F_paths);
+    F_diff = F_fast - F_paths;
+    std::cout << GridLogMessage << "open plaquette force, fast vs loop path (cG = " << cG
+              << ") difference norm2 " << norm2(F_diff) << std::endl;
+    GRID_ASSERT(norm2(F_diff) < 1.0e-12 * (1.0 + norm2(F_paths)));
+  }
+
+  // Plaquette plus rectangle: fast plaquettes plus loop-path rectangles against the loop path for both
+  {
+    OpenGaugeBoundaryParameters rect_parameters = OpenGaugeBoundaryParameters::Open(Nd - 1, test_cG);
+    PlaqPlusRectangleAction<PeriodicGimplR> open_rect(c_plaq, c_rect, rect_parameters);
+    OpenGaugeBoundary<PeriodicGimplR> open_paths(rect_parameters);
+    open_rect.deriv(U, F_periodic);
+    open_paths.derivative(U, LoopPathR::plaquetteRectangleLoops(c_plaq, c_rect), F_paths);
+    F_diff = F_periodic - F_paths;
+    std::cout << GridLogMessage << "open plaquette+rectangle force, action vs loop path difference norm2 "
+              << norm2(F_diff) << std::endl;
+    GRID_ASSERT(norm2(F_diff) < 1.0e-11 * (1.0 + norm2(F_paths)));
+  }
+
   // Plaquette/rectangle observables and their action identities are tested in
   // tests/core/Test_open_gauge_loops.cc.
   OpenGaugeBoundaryParameters obc = OpenGaugeBoundaryParameters::Open(Nd - 1, 1.0);

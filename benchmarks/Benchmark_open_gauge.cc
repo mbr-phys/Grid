@@ -177,7 +177,8 @@ int main(int argc, char **argv) {
   const RealD c_rect = beta * c1;
   WilsonGaugeAction<Gimpl>   wilsonP(beta),   wilsonO(beta, open);
   SymanzikGaugeAction<Gimpl> symanzikP(beta), symanzikO(beta, open);
-  Boundary genericPeriodic(periodic);
+  Boundary genericPeriodic(periodic), genericOpen(open);
+  PlaqPlusRectangleAction<Gimpl> plaqOnlyO(beta, 0.0, open); // Wilson as plaquette+rectangle with c_rect = 0
   const auto plaqLoops = Path::plaquetteLoops(beta);
   const auto symLoops = Path::plaquetteRectangleLoops(c_plaq, c_rect);
   const auto unitPlaq = Path::plaquetteLoops(1.0);
@@ -227,6 +228,14 @@ int main(int argc, char **argv) {
       [&]() { symanzikP.deriv(U, F); sink += norm2(F); },
       [&]() { genericPeriodic.derivative(U, symLoops, F); sink += norm2(F); },
       [&]() { symanzikO.deriv(U, F); sink += norm2(F); });
+  // the open Wilson force above uses the padded staple stencil; these are the loop-path reference and the
+  // plaquette+rectangle action with c_rect = 0 (the Hadrons Wilson flow action)
+  run("force Wilson, open loop path",
+      none, none,
+      [&]() { genericOpen.derivative(U, plaqLoops, F); sink += norm2(F); });
+  run("force PlaqPlusRect c_rect=0",
+      none, none,
+      [&]() { plaqOnlyO.deriv(U, F); sink += norm2(F); });
   run("action Wilson",
       [&]() { sink += wilsonP.S(U); },
       [&]() { sink += genericPeriodic.action(U, plaqLoops); },

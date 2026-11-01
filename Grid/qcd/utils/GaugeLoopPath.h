@@ -190,6 +190,44 @@ public:
     return weight;
   }
 
+  // loopWeight depends on the time slice x0 of the loop's starting site only: its value on each slice x0 = 0..Lt-1
+  // (all ones if periodic)
+  static std::vector<RealD> loopWeightProfile(const int Lt, const std::vector<int> &path,
+                                              const OpenGaugeBoundaryParameters &p,
+                                              const GaugeLoopWeights &w) {
+    std::vector<RealD> profile(Lt, 1.0);
+    if (!p.open) return profile;
+
+    checkParameters(p);
+    const int T = Lt - 1;
+    GRID_ASSERT(T >= 1);
+
+    int minimum, maximum;
+    temporalRange(path, p.timeDir, minimum, maximum);
+    const bool spatial = isSpatial(path, p.timeDir);
+    for (int x0 = 0; x0 < Lt; ++x0) {
+      if ((x0 < -minimum) || (x0 > T - maximum)) profile[x0] = 0.0;
+      else if (spatial && ((x0 == 0) || (x0 == T))) profile[x0] = w.boundary;
+    }
+    return profile;
+  }
+
+  // Scalar field equal to profile[x0] on the time slice x0 of direction t
+  static ComplexField profileField(GridBase *grid, const int t, const std::vector<RealD> &profile) {
+    const int Lt = grid->GlobalDimensions()[t];
+    GRID_ASSERT(int(profile.size()) == Lt);
+    ComplexField field(grid), value(grid);
+    LatticeInteger x0(grid);
+    LatticeCoordinate(x0, t);
+    field = Zero();
+    for (int k = 0; k < Lt; ++k) {
+      if (profile[k] == 0.0) continue;
+      value = profile[k];
+      field = where(x0 == Integer(k), value, field);
+    }
+    return field;
+  }
+
   // Lowest and highest offset of the path's vertices along direction t, relative to its starting site (minimum <= 0 <= maximum)
   static void temporalRange(const std::vector<int> &path, const int t, int &minimum, int &maximum) {
     int displacement = 0;
@@ -365,19 +403,89 @@ public:
   }
 
   // Product of links along path, starting at x + displacement, as a field in x.
+  // Two equivalent constructions, chosen per path by their number of single-site shifts (each a Cshift,
+  // i.e. communication when the direction is split across ranks):
+  //   per link:    each link shifted by its offset; cheapest for short closed loops (plaquette: 2 shifts)
+  //   incremental: one shift of the running product per step; cheaper for longer open paths
+  // On a tie the per-link construction is used.
   static void pathProduct(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
-                          const std::vector<int> &path, Coordinate displacement) {
-    out = 1.0;
+                          const std::vector<int> &path, const Coordinate &displacement) {
+    if (path.empty()) {
+      out = 1.0;
+      return;
+    }
+    if (incrementalShifts(path, displacement) < perLinkShifts(path, displacement)) {
+      pathProductIncremental(out, links, path, displacement);
+    } else {
+      pathProductPerLink(out, links, path, displacement);
+    }
+  }
+
+  // Shifts needed when each link is shifted by its offset from x
+  static int perLinkShifts(const std::vector<int> &path, Coordinate displacement) {
+    int shifts = 0;
+    for (auto step : path) {
+      const int mu = std::abs(step) - 1;
+      if (step < 0) displacement[mu]--;
+      for (int d = 0; d < Nd; ++d) shifts += std::abs(displacement[d]);
+      if (step > 0) displacement[mu]++;
+    }
+    return shifts;
+  }
+
+  // Shifts needed by the incremental construction: one per step, except a forward last step, plus the
+  // shift of the result by the starting displacement
+  static int incrementalShifts(const std::vector<int> &path, const Coordinate &displacement) {
+    int shifts = int(path.size()) - ((path.back() > 0) ? 1 : 0);
+    for (int d = 0; d < Nd; ++d) shifts += std::abs(displacement[d]);
+    return shifts;
+  }
+
+  static void pathProductPerLink(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
+                                 const std::vector<int> &path, Coordinate displacement) {
+    bool first = true;
     for (auto step : path) {
       const int mu = std::abs(step) - 1;
       if (step > 0) {
-        out = out * shiftGauge(links[mu], displacement);
+        if (first) out = shiftGauge(links[mu], displacement);
+        else       out = out * shiftGauge(links[mu], displacement);
         displacement[mu]++;
       } else {
         displacement[mu]--;
-        out = out * shiftGauge(adj(links[mu]), displacement);
+        if (first) out = shiftGauge(adj(links[mu]), displacement);
+        else       out = out * shiftGauge(adj(links[mu]), displacement);
       }
+      first = false;
     }
+  }
+
+  // Built from the end of the path: with R_k(y) the product of steps k.. starting at y,
+  //   forward  step: R_k(y) = U_mu(y) R_{k+1}(y + mu)
+  //   backward step: R_k(y) = U_mu(y - mu)^dag R_{k+1}(y - mu)
+  static void pathProductIncremental(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
+                                     const std::vector<int> &path, const Coordinate &displacement) {
+    GaugeLinkField tmp(links[0].Grid());
+    bool first = true;
+    for (int k = path.size() - 1; k >= 0; --k) {
+      const int step = path[k];
+      const int mu = std::abs(step) - 1;
+      if (step > 0) {
+        if (first) {
+          out = links[mu];
+        } else {
+          tmp = Gimpl::CshiftLink(out, mu, 1);
+          out = links[mu] * tmp;
+        }
+      } else {
+        if (first) tmp = adj(links[mu]);
+        else       tmp = adj(links[mu]) * out;
+        out = Gimpl::CshiftLink(tmp, mu, -1);
+      }
+      first = false;
+    }
+    bool shifted = false;
+    for (int d = 0; d < Nd; ++d) shifted = shifted || (displacement[d] != 0);
+    if (shifted) out = shiftGauge(out, displacement);
   }
 
   static void checkParameters(const OpenGaugeBoundaryParameters &p) {
