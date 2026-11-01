@@ -403,17 +403,67 @@ public:
   }
 
   // Product of links along path, starting at x + displacement, as a field in x.
-  // Built from the end of the path: with R_k(y) the product of steps k.. starting at y,
-  //   forward  step: R_k(y) = U_mu(y) R_{k+1}(y + mu)
-  //   backward step: R_k(y) = U_mu(y - mu)^dag R_{k+1}(y - mu)
-  // so each step costs one shift of the running product, instead of one shift per unit of displacement per link.
+  // Two equivalent constructions, chosen per path by their number of single-site shifts (each a Cshift,
+  // i.e. communication when the direction is split across ranks):
+  //   per link:    each link shifted by its offset; cheapest for short closed loops (plaquette: 2 shifts)
+  //   incremental: one shift of the running product per step; cheaper for longer open paths
+  // On a tie the per-link construction is used.
   static void pathProduct(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
-                          const std::vector<int> &path, Coordinate displacement) {
+                          const std::vector<int> &path, const Coordinate &displacement) {
     if (path.empty()) {
       out = 1.0;
       return;
     }
+    if (incrementalShifts(path, displacement) < perLinkShifts(path, displacement)) {
+      pathProductIncremental(out, links, path, displacement);
+    } else {
+      pathProductPerLink(out, links, path, displacement);
+    }
+  }
 
+  // Shifts needed when each link is shifted by its offset from x
+  static int perLinkShifts(const std::vector<int> &path, Coordinate displacement) {
+    int shifts = 0;
+    for (auto step : path) {
+      const int mu = std::abs(step) - 1;
+      if (step < 0) displacement[mu]--;
+      for (int d = 0; d < Nd; ++d) shifts += std::abs(displacement[d]);
+      if (step > 0) displacement[mu]++;
+    }
+    return shifts;
+  }
+
+  // Shifts needed by the incremental construction: one per step, except a forward last step, plus the
+  // shift of the result by the starting displacement
+  static int incrementalShifts(const std::vector<int> &path, const Coordinate &displacement) {
+    int shifts = int(path.size()) - ((path.back() > 0) ? 1 : 0);
+    for (int d = 0; d < Nd; ++d) shifts += std::abs(displacement[d]);
+    return shifts;
+  }
+
+  static void pathProductPerLink(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
+                                 const std::vector<int> &path, Coordinate displacement) {
+    bool first = true;
+    for (auto step : path) {
+      const int mu = std::abs(step) - 1;
+      if (step > 0) {
+        if (first) out = shiftGauge(links[mu], displacement);
+        else       out = out * shiftGauge(links[mu], displacement);
+        displacement[mu]++;
+      } else {
+        displacement[mu]--;
+        if (first) out = shiftGauge(adj(links[mu]), displacement);
+        else       out = out * shiftGauge(adj(links[mu]), displacement);
+      }
+      first = false;
+    }
+  }
+
+  // Built from the end of the path: with R_k(y) the product of steps k.. starting at y,
+  //   forward  step: R_k(y) = U_mu(y) R_{k+1}(y + mu)
+  //   backward step: R_k(y) = U_mu(y - mu)^dag R_{k+1}(y - mu)
+  static void pathProductIncremental(GaugeLinkField &out, const std::vector<GaugeLinkField> &links,
+                                     const std::vector<int> &path, const Coordinate &displacement) {
     GaugeLinkField tmp(links[0].Grid());
     bool first = true;
     for (int k = path.size() - 1; k >= 0; --k) {
@@ -433,7 +483,9 @@ public:
       }
       first = false;
     }
-    out = shiftGauge(out, displacement);
+    bool shifted = false;
+    for (int d = 0; d < Nd; ++d) shifted = shifted || (displacement[d] != 0);
+    if (shifted) out = shiftGauge(out, displacement);
   }
 
   static void checkParameters(const OpenGaugeBoundaryParameters &p) {
