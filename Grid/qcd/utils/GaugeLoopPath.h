@@ -229,7 +229,8 @@ public:
       while ((b + 1 < Lt) && (profile[b + 1] == profile[a])) ++b;
       if (profile[a] != 0.0) {
         value = profile[a];
-        lower = where(x0 > Integer(a - 1), value, field); // value on x0 >= a
+        // Integer is unsigned: compare only with non-negative values
+        lower = where(x0 < Integer(a), field, value);     // value on x0 >= a
         field = where(x0 < Integer(b + 1), lower, field); // and x0 <= b
       }
       a = b + 1;
