@@ -28,6 +28,9 @@
 #ifndef GRID_QCD_GAUGE_LOOP_PATH_H
 #define GRID_QCD_GAUGE_LOOP_PATH_H
 
+#include <map>
+#include <tuple>
+
 NAMESPACE_BEGIN(Grid);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -213,19 +216,30 @@ public:
   }
 
   // Scalar field equal to profile[x0] on the time slice x0 of direction t
+  // Built run by run (a run being consecutive slices with equal values), two where() per non-zero run
   static ComplexField profileField(GridBase *grid, const int t, const std::vector<RealD> &profile) {
     const int Lt = grid->GlobalDimensions()[t];
     GRID_ASSERT(int(profile.size()) == Lt);
-    ComplexField field(grid), value(grid);
+    ComplexField field(grid), value(grid), lower(grid);
     LatticeInteger x0(grid);
     LatticeCoordinate(x0, t);
     field = Zero();
-    for (int k = 0; k < Lt; ++k) {
-      if (profile[k] == 0.0) continue;
-      value = profile[k];
-      field = where(x0 == Integer(k), value, field);
+    for (int a = 0; a < Lt;) {
+      int b = a;
+      while ((b + 1 < Lt) && (profile[b + 1] == profile[a])) ++b;
+      if (profile[a] != 0.0) {
+        value = profile[a];
+        lower = where(x0 > Integer(a - 1), value, field); // value on x0 >= a
+        field = where(x0 < Integer(b + 1), lower, field); // and x0 <= b
+      }
+      a = b + 1;
     }
     return field;
+  }
+
+  static bool isOne(const std::vector<RealD> &profile) {
+    for (auto v : profile) if (v != 1.0) return false;
+    return true;
   }
 
   // Lowest and highest offset of the path's vertices along direction t, relative to its starting site (minimum <= 0 <= maximum)
@@ -277,13 +291,15 @@ public:
     return out;
   }
 
+  // The weights are uniform in space, so their sums follow from the time-slice profiles alone
   static RealD loopWeightSum(GridBase *grid, const std::vector<Loop> &loops,
                              const OpenGaugeBoundaryParameters &p,
                              const GaugeLoopWeights &w) {
+    const int Lt = grid->GlobalDimensions()[p.timeDir];
+    const RealD V3 = RealD(grid->gSites()) / RealD(Lt);
     RealD weightSum = 0.0;
     for (const auto &loop : loops) {
-      ComplexField weight = loopWeight(grid, loop.path, p, w);
-      weightSum += real(TensorRemove(sum(weight)));
+      for (auto v : loopWeightProfile(Lt, loop.path, p, w)) weightSum += v * V3;
     }
     return weightSum;
   }
@@ -306,20 +322,34 @@ public:
   // Loop coefficients are ignored: every loop of the family enters with
   // its boundary weight only
   ///////////////////////////////////////////////////////////////////////////
+  // Loops with the same weight profile have their traces summed first, so each distinct weight field is built
+  // once per call (plaquettes: 2, rectangles: 3); the weight sum follows from the profiles
   static GaugeLoopAverage loopAverage(const GaugeField &U, const std::vector<Loop> &loops,
                                       const OpenGaugeBoundaryParameters &p,
                                       const GaugeLoopWeights &w) {
     GridBase *grid = U.Grid();
+    const int Lt = grid->GlobalDimensions()[p.timeDir];
+    const RealD V3 = RealD(grid->gSites()) / RealD(Lt);
     std::vector<GaugeLinkField> links = extractLinks(U);
-    ComplexField weight(grid), reTrace(grid), density(grid);
+    GaugeLinkField transporter(grid);
+    ComplexField reTrace(grid), density(grid);
+    std::map<std::vector<RealD>, ComplexField> traces;
     RealD numerator = 0.0;
     RealD weightSum = 0.0;
 
     for (const auto &loop : loops) {
-      loopWeightAndTrace(weight, reTrace, links, loop.path, p, w);
-      density = weight * reTrace;
+      const std::vector<RealD> profile = loopWeightProfile(Lt, loop.path, p, w);
+      pathProduct(transporter, links, loop.path, Coordinate(Nd, 0));
+      reTrace = real(trace(transporter));
+      auto it = traces.find(profile);
+      if (it == traces.end()) traces.emplace(profile, reTrace);
+      else                    it->second = it->second + reTrace;
+      for (auto v : profile) weightSum += v * V3;
+    }
+    for (const auto &c : traces) {
+      if (isOne(c.first)) density = c.second;
+      else                density = profileField(grid, p.timeDir, c.first) * c.second;
       numerator += real(TensorRemove(sum(density)));
-      weightSum += real(TensorRemove(sum(weight)));
     }
     GRID_ASSERT(weightSum > 0.0);
 
@@ -341,30 +371,51 @@ public:
     checkParameters(p);
     GridBase *grid = U.Grid();
     const int t = p.timeDir;
+    const int Lt = grid->GlobalDimensions()[t];
+    const RealD V3 = RealD(grid->gSites()) / RealD(Lt);
     std::vector<GaugeLinkField> links = extractLinks(U);
-    ComplexField weight(grid), reTrace(grid), density(grid), numeratorField(grid), weightField(grid);
-    numeratorField = Zero();
-    weightField = Zero();
+    GaugeLinkField transporter(grid);
+    ComplexField reTrace(grid), density(grid);
+    // traces summed over the loops sharing a weight profile and slice offsets [minimum, maximum]
+    std::map<std::tuple<std::vector<RealD>, int, int>, ComplexField> traces;
+    std::vector<RealD> weightProfile(Lt, 0.0), numerator(Lt, 0.0);
+    auto slice = [Lt](const int x0) { return ((x0 % Lt) + Lt) % Lt; };
 
+    // Each contribution moves from its starting slice x0 to x0 + k for k in [minimum, maximum], with weight
+    // 1/(maximum - minimum + 1); masked loops never reach past the open boundary, so the periodic shift does not
+    // wrap anything that is present. Both are done on the slice sums, the weights' entirely from their profiles.
     for (const auto &loop : loops) {
-      loopWeightAndTrace(weight, reTrace, links, loop.path, p, w);
-      density = weight * reTrace;
-
+      const std::vector<RealD> profile = loopWeightProfile(Lt, loop.path, p, w);
       int minimum = 0, maximum = 0;
       if (assignment == GaugeLoopSliceAssignment::Split) temporalRange(loop.path, t, minimum, maximum);
       const RealD share = 1.0 / RealD(maximum - minimum + 1);
 
-      // Move each contribution from its starting site x to x + k t-hat
-      // Masked loops never reach past the open boundary, so the periodic shift does not wrap anything that is present
+      pathProduct(transporter, links, loop.path, Coordinate(Nd, 0));
+      reTrace = real(trace(transporter));
+      const auto key = std::make_tuple(profile, minimum, maximum);
+      auto it = traces.find(key);
+      if (it == traces.end()) traces.emplace(key, reTrace);
+      else                    it->second = it->second + reTrace;
+
       for (int k = minimum; k <= maximum; ++k) {
-        numeratorField = numeratorField + share * Cshift(density, t, -k);
-        weightField = weightField + share * Cshift(weight, t, -k);
+        for (int x0 = 0; x0 < Lt; ++x0) weightProfile[x0] += share * V3 * profile[slice(x0 - k)];
+      }
+    }
+    for (const auto &c : traces) {
+      const std::vector<RealD> &profile = std::get<0>(c.first);
+      const int minimum = std::get<1>(c.first), maximum = std::get<2>(c.first);
+      const RealD share = 1.0 / RealD(maximum - minimum + 1);
+
+      if (isOne(profile)) density = c.second;
+      else                density = profileField(grid, t, profile) * c.second;
+      const std::vector<RealD> sums = sliceSums(density, p);
+      for (int k = minimum; k <= maximum; ++k) {
+        for (int x0 = 0; x0 < Lt; ++x0) numerator[x0] += share * sums[slice(x0 - k)];
       }
     }
 
     GaugeLoopSliceAverage result;
-    std::vector<RealD> numerator = sliceSums(numeratorField, p);
-    result.weightSum = sliceSums(weightField, p);
+    result.weightSum = weightProfile;
     result.value.resize(numerator.size());
     for (int x0 = 0; x0 < numerator.size(); ++x0) {
       const RealD W = result.weightSum[x0];
