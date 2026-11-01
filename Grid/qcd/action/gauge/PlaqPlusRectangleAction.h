@@ -88,7 +88,13 @@ public:
 
   virtual void deriv(const GaugeField &U, GaugeField &dSdU) {
     if (boundary.isOpen()) {
-      boundary.derivative(U, GaugeLoopPath<Gimpl>::plaquetteRectangleLoops(c_plaq, c_rect), dSdU);
+      // plaquettes on the padded staple stencil; rectangles, if any, on the generic loop path
+      boundary.plaquetteDerivative(U, c_plaq, dSdU);
+      if (c_rect != 0.0) {
+        GaugeField dSdU_rect(U.Grid());
+        boundary.derivative(U, GaugeLoopPath<Gimpl>::rectangleLoops(c_rect), dSdU_rect);
+        dSdU = dSdU + dSdU_rect;
+      }
       return;
     }
     //extend Ta to include Lorentz indexes

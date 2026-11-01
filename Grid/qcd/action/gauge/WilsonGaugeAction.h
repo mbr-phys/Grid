@@ -78,7 +78,7 @@ public:
 
   virtual void deriv(const GaugeField &U, GaugeField &dSdU) {
     if (boundary.isOpen()) {
-      boundary.derivative(U, GaugeLoopPath<Gimpl>::plaquetteLoops(beta), dSdU);
+      boundary.plaquetteDerivative(U, beta, dSdU);
       return;
     }
     // not optimal implementation FIXME
