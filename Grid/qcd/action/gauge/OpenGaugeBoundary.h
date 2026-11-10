@@ -83,6 +83,28 @@ public:
     return s.str();
   }
 
+  // U = exp(ep*P)*U (Gimpl::update_field) on the active links only: the unused links U_t(x0=T) keep their value,
+  // as in openQCD (wflow.c, update_ud). openQCD configurations store those links as zero (bcnds.c, set_bc), and
+  // update_field would turn a zero link into NaN when projecting it on the group. Use this for any update of an
+  // open-boundary field, e.g. the gradient flow or a molecular-dynamics step.
+  void updateField(GaugeField &P, GaugeField &U, RealD ep) const {
+    if (!isOpen()) {
+      Gimpl::update_field(P, U, ep);
+      return;
+    }
+    GridBase *grid = U.Grid();
+    const int t = parameters_.timeDir;
+    const int T = grid->GlobalDimensions()[t] - 1;
+    GaugeLinkField unused = PeekIndex<LorentzIndex>(U, t);
+    Gimpl::update_field(P, U, ep);
+    GaugeLinkField Ut = PeekIndex<LorentzIndex>(U, t);
+    LatticeInteger x0(grid);
+    LatticeCoordinate(x0, t);
+    // a select, so that the discarded (possibly NaN) updated value cannot propagate
+    Ut = where(x0 == Integer(T), unused, Ut);
+    PokeIndex<LorentzIndex>(U, Ut, t);
+  }
+
   // Action weight of a loop: geometric mask, and cG/2 for purely spatial loops on x0=0 and x0=T
   ComplexField loopWeight(GridBase *grid, const std::vector<int> &path) const {
     return Path::loopWeight(grid, path, parameters_, GaugeLoopWeights::action(parameters_));
@@ -146,11 +168,14 @@ public:
     GRID_ASSERT(Lt >= 2);
     std::vector<GaugeLinkField> links = Path::extractLinks(U);
 
-    // links with U_t(x0=T) set to zero
+    // links with U_t(x0=T) set to zero, by a select rather than a product with a 0/1 profile, so that a
+    // non-finite unused link cannot reach the staples of the active links
     std::vector<GaugeLinkField> cut(links);
-    std::vector<RealD> keep(Lt, 1.0);
-    keep[Lt - 1] = 0.0;
-    cut[t] = (*profileField(grid, keep)) * links[t];
+    LatticeInteger x0(grid);
+    LatticeCoordinate(x0, t);
+    GaugeLinkField zero(grid);
+    zero = Zero();
+    cut[t] = where(x0 == Integer(Lt - 1), zero, links[t]);
 
     Cache &c = cache(grid);
     if (!c.staples) c.staples.reset(new StapleWorkspace);
