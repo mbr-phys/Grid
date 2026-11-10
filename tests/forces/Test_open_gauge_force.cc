@@ -192,6 +192,71 @@ int main(int argc, char **argv)
   std::cout << GridLogMessage << "dummy temporal-link force norm2 " << norm2(Ft) << std::endl;
   GRID_ASSERT(norm2(Ft) == 0.0);
 
+  // openQCD configurations store the unused links U_t(x0=T) as zero (bcnds.c, set_bc). They occur in no retained
+  // loop, so the open forces must be unchanged and finite. Gimpl::update_field projects a zero link to NaN, while
+  // OpenGaugeBoundary::updateField must leave it zero, as the openQCD flow does (wflow.c, update_ud).
+  {
+    const Integer T = latt_size[Nd - 1] - 1;
+    LatticeGaugeField Uzero(U);
+    LatticeColourMatrix link(&grid);
+    link = PeekIndex<LorentzIndex>(Uzero, Nd - 1);
+    link = where(x0 == T, zero, link);
+    PokeIndex<LorentzIndex>(Uzero, link, Nd - 1);
+
+    LatticeGaugeField F_hot(&grid), F_zero(&grid);
+    open_wilson.deriv(U, F_hot);
+    open_wilson.deriv(Uzero, F_zero);
+    F_diff = F_zero - F_hot;
+    std::cout << GridLogMessage << "open Wilson force, zero vs SU(3) unused links, difference norm2 "
+              << norm2(F_diff) << std::endl;
+    GRID_ASSERT(std::isfinite(norm2(F_zero)));
+    GRID_ASSERT(norm2(F_diff) < 1.0e-12 * (1.0 + norm2(F_hot)));
+
+    open_iwasaki.deriv(U, F_hot);
+    open_iwasaki.deriv(Uzero, F_zero);
+    F_diff = F_zero - F_hot;
+    std::cout << GridLogMessage << "open Iwasaki force, zero vs SU(3) unused links, difference norm2 "
+              << norm2(F_diff) << std::endl;
+    GRID_ASSERT(std::isfinite(norm2(F_zero)));
+    GRID_ASSERT(norm2(F_diff) < 1.0e-12 * (1.0 + norm2(F_hot)));
+
+    // one flow-sized update with the Wilson force
+    const RealD ep = -0.02;
+    OpenGaugeBoundary<PeriodicGimplR> open_boundary(obc);
+    LatticeGaugeField P(&grid), Uhot(U), Uz(Uzero), Uplain(Uzero), U_diff(&grid);
+    open_wilson.deriv(Uzero, P);
+
+    // the unmasked update produces NaN, so the checks below resolve the problem
+    PeriodicGimplR::update_field(P, Uplain, ep);
+    std::cout << GridLogMessage << "Gimpl::update_field with zero unused links, norm2 " << norm2(Uplain) << std::endl;
+    GRID_ASSERT(!std::isfinite(norm2(Uplain)));
+
+    open_boundary.updateField(P, Uz, ep);
+    open_boundary.updateField(P, Uhot, ep);
+    GRID_ASSERT(std::isfinite(norm2(Uz)));
+
+    // the unused links are unchanged: zero, and the SU(3) values of U
+    link = PeekIndex<LorentzIndex>(Uz, Nd - 1);
+    link = where(x0 == T, link, zero);
+    std::cout << GridLogMessage << "updateField: zero unused links after the update, norm2 " << norm2(link) << std::endl;
+    GRID_ASSERT(norm2(link) == 0.0);
+
+    U_diff = Uhot - U;
+    link = PeekIndex<LorentzIndex>(U_diff, Nd - 1);
+    link = where(x0 == T, link, zero);
+    std::cout << GridLogMessage << "updateField: change of SU(3) unused links, norm2 " << norm2(link) << std::endl;
+    GRID_ASSERT(norm2(link) == 0.0);
+
+    // the active links do not depend on the value stored in the unused links
+    U_diff = Uz - Uhot;
+    link = PeekIndex<LorentzIndex>(U_diff, Nd - 1);
+    link = where(x0 == T, zero, link);
+    PokeIndex<LorentzIndex>(U_diff, link, Nd - 1);
+    std::cout << GridLogMessage << "updateField: active links, zero vs SU(3) unused links, difference norm2 "
+              << norm2(U_diff) << std::endl;
+    GRID_ASSERT(norm2(U_diff) < 1.0e-20 * norm2(Uhot));
+  }
+
   Grid_finalize();
   return 0;
 }
